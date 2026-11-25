@@ -1,0 +1,210 @@
+"""ASCII bouquet - run:  python ascii_bouquet.py
+Creates index.html, starts a server at http://localhost:8000 and opens your browser.
+You see an envelope with an "open" note. Click it and the bouquet slowly pops up.
+Press Ctrl+C in the terminal to stop."""
+import http.server
+import socketserver
+import webbrowser
+
+HTML = r"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ASCII Bouquet</title>
+<style>
+:root{--bg:#05060f;box-sizing:border-box;
+padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#05060f}}
+:root[data-theme="dark"]{--bg:#05060f}
+html,body{height:100%;margin:0;background:var(--bg);overflow:hidden}
+#wrap{width:100%;height:100%}
+canvas{display:block;width:100%;height:100%;cursor:pointer}
+</style></head><body>
+<div id="wrap"><canvas id="c"></canvas></div>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+let W,H,fs,cw,chh,cols,rows,dep,cell;
+function resize(){
+  const r=cv.parentElement.getBoundingClientRect(),d=window.devicePixelRatio||1;
+  W=r.width;H=r.height;cv.width=W*d;cv.height=H*d;ctx.setTransform(d,0,0,d,0,0);
+  fs=Math.max(9,Math.min(16,W/64));
+  ctx.font='bold '+fs+'px ui-monospace,Menlo,Consolas,monospace';ctx.textBaseline='top';
+  cw=ctx.measureText('M').width;chh=fs*1.1;cols=Math.floor(W/cw);rows=Math.floor(H/chh);
+  dep=new Float32Array(cols*rows);cell=new Int32Array(cols*rows);
+}
+addEventListener('resize',resize);resize();
+
+/* ---------- build the bouquet as 3D points ---------- */
+const P=[],R=Math.random;
+const add=(x,y,z,c,col)=>P.push({x,y,z,c,col});
+const norm=v=>{const l=Math.hypot(v[0],v[1],v[2])||1;return [v[0]/l,v[1]/l,v[2]/l]};
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+const BASE=[0,-0.95,0];
+const FL=[ // x, y, z, size, petals, colour
+ [0,.95,0,.36,8,'#4da3ff'],[-.62,.72,.18,.3,7,'#ff6ec7'],[.64,.7,-.12,.3,9,'#ffd23f'],
+ [.05,.62,.62,.3,6,'#ff8a5b'],[-.1,.6,-.62,.3,8,'#b388ff'],[-.55,.3,-.4,.27,7,'#6ee7d0'],
+ [.55,.28,.45,.27,8,'#ff6ec7'],[-.5,.25,.5,.26,6,'#ffd23f'],[.45,.3,-.55,.26,7,'#4da3ff']];
+
+FL.forEach((f,idx)=>{
+  const c=[f[0],f[1],f[2]],r=f[3],np=f[4],col=f[5];
+  const n=norm([c[0],c[1]+.5,c[2]]),a=norm(cross(n,[.31,.17,.93])),b=cross(n,a);
+  for(let phi=0;phi<1.3;phi+=.08){
+    const cnt=phi===0?1:Math.max(6,Math.round(2*Math.PI*r*Math.sin(phi)/.03));
+    for(let k=0;k<cnt;k++){
+      const th=2*Math.PI*k/cnt,pet=Math.cos(np*th),rr=r*(1+.22*pet*Math.sin(phi));
+      const lx=rr*Math.sin(phi)*Math.cos(th),ly=rr*Math.cos(phi)*.8,lz=rr*Math.sin(phi)*Math.sin(th);
+      let ch,cl=col;
+      if(phi<.25){ch='@';cl='#ffd23f'}
+      else if(phi<.6){ch='o';cl='#ffb347'}
+      else if(phi<1.0){ch=pet>.2?'#':'%'}
+      else ch=pet>0?'*':'+';
+      add(c[0]+a[0]*lx+n[0]*ly+b[0]*lz,c[1]+a[1]*lx+n[1]*ly+b[1]*lz,c[2]+a[2]*lx+n[2]*ly+b[2]*lz,ch,cl);
+    }
+  }
+  for(let i=0;i<=26;i++){ // stem
+    const t=i/26,bend=Math.sin(t*Math.PI)*.07*((idx%3)-1);
+    add(BASE[0]+(c[0]-BASE[0])*t+bend,BASE[1]+(c[1]-BASE[1])*t,BASE[2]+(c[2]-BASE[2])*t,i%2?':':'|','#3fbf6b');
+  }
+});
+for(let i=0;i<260;i++){ // leaves & filler
+  const d=norm([R()-.5,R()*.9+.1,R()-.5]),rad=.45+R()*.6;
+  add(d[0]*rad*1.3,-.1+d[1]*rad*1.1,d[2]*rad*1.3,'"`,^'[i%4],['#2fa862','#6ee7a0','#8dffb5'][i%3]);
+}
+const rCone=y=>.72*(y+1.25)/.95;
+for(let y=-.3;y>-1.25;y-=.02){ // wrapping paper
+  const r=rCone(y),cnt=Math.max(6,Math.round(2*Math.PI*r/.03));
+  for(let k=0;k<cnt;k++){
+    const th=2*Math.PI*k/cnt;
+    add(r*Math.cos(th),y,r*Math.sin(th),k%2?'/':'\\',k%4<2?'#f58fb8':'#c97bff');
+  }
+}
+for(let k=0;k<70;k++){const th=2*Math.PI*k/70,r=rCone(-.8)+.03;add(r*Math.cos(th),-.8,r*Math.sin(th),'=','#ffd23f')}
+
+/* ---------- stars + cat ---------- */
+const stars=Array.from({length:150},()=>({x:R(),y:R(),ph:R()*6.28,c:'.*+\u00b7'[Math.floor(R()*4)]}));
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+const CAT=[' /\\_/\\ ','( OwO )',' > ^ < '];
+
+/* ---------- envelope + reveal ---------- */
+let openStart=null;                       // time (ms) when the envelope was clicked
+const OPEN_DUR=1.4, WAIT=1.6, POP_DUR=5;  // seconds: flap opens, pause, bouquet grows slowly
+const clamp=(v,a=0,b=1)=>Math.min(b,Math.max(a,v));
+const smooth=t=>t*t*(3-2*t);
+const easeOut=t=>1-Math.pow(1-t,3);
+function startOpen(){ if(openStart===null) openStart=performance.now(); }
+cv.addEventListener('click',startOpen);
+addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' ') startOpen(); });
+
+function poly(pts,fill,stroke){
+  ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0],pts[i][1]);
+  ctx.closePath();ctx.fillStyle=fill;ctx.fill();
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.stroke()}
+}
+
+function drawEnvelope(t,o,fade,slide){
+  const ew=Math.min(W*.62,440),eh=ew*.64,ex=W/2-ew/2;
+  const ey=H*.52-eh/2+slide+(openStart===null?Math.sin(t*2)*4:0);
+  const mx=ex+ew/2;
+  ctx.globalAlpha=fade;ctx.textBaseline='middle';ctx.textAlign='center';
+  // inside of envelope
+  ctx.fillStyle='#c4578c';ctx.fillRect(ex,ey,ew,eh);
+  // flap tip height: closed = 0.58*eh below top, open = above top
+  const tip=ey+eh*.58*Math.cos(Math.PI*o);
+  const flapCol=o<.5?'#ffb3d6':'#e07aae';
+  if(o>=.5) poly([[ex,ey],[ex+ew,ey],[mx,tip]],flapCol,'#ff6ec7'); // opened flap sits behind letter
+  // letter slides out
+  const lift=smooth(clamp((o-.45)/.55))*eh*.55;
+  if(o>.45){
+    ctx.fillStyle='#fffaf3';ctx.fillRect(ex+ew*.08,ey+eh*.08-lift,ew*.84,eh*.8);
+    ctx.fillStyle='#ff6ec7';ctx.font='bold '+(fs*1.1)+'px ui-monospace,Menlo,Consolas,monospace';
+    ctx.fillText('for you \u2764',mx,ey+eh*.3-lift);
+    ctx.fillStyle='#d9b3c6';
+    for(let i=0;i<3;i++)ctx.fillRect(ex+ew*.2,ey+eh*.45-lift+i*fs*1.2,ew*.6*(1-i*.15),2);
+  }
+  // front of envelope
+  const bot=ey+eh;
+  poly([[ex,ey],[mx,ey+eh*.56],[ex,bot]],'#ffc9e2','#ff6ec7');
+  poly([[ex+ew,ey],[mx,ey+eh*.56],[ex+ew,bot]],'#ffc9e2','#ff6ec7');
+  poly([[ex,bot],[mx,ey+eh*.4],[ex+ew,bot]],'#ffd9ec','#ff6ec7');
+  if(o<.5){ // closed flap in front
+    poly([[ex,ey],[ex+ew,ey],[mx,tip]],flapCol,'#ff6ec7');
+    ctx.font=(fs*2)+'px ui-monospace,Menlo,Consolas,monospace';ctx.fillStyle='#e0245e';
+    ctx.globalAlpha=fade*(1-o*2);ctx.fillText('\u2764',mx,tip-fs*.6);ctx.globalAlpha=fade;
+  }
+  // the "open" note
+  if(openStart===null){
+    const nw=Math.min(ew*.5,200),nh=fs*3.6,nx=mx-nw/2,ny=ey-nh-fs*2.6+Math.sin(t*3)*3;
+    ctx.save();ctx.translate(mx,ny+nh/2);ctx.rotate(-.05);ctx.translate(-mx,-(ny+nh/2));
+    ctx.fillStyle='#fff6a8';ctx.fillRect(nx,ny,nw,nh);
+    ctx.strokeStyle='#e0c43a';ctx.lineWidth=2;ctx.strokeRect(nx,ny,nw,nh);
+    ctx.fillStyle='#5a4a00';ctx.font='bold '+(fs*1.6)+'px ui-monospace,Menlo,Consolas,monospace';
+    ctx.fillText('\u2709 open',mx,ny+nh/2);
+    ctx.restore();
+    ctx.fillStyle='#ff9ad5';ctx.font='bold '+fs+'px ui-monospace,Menlo,Consolas,monospace';
+    ctx.fillText('\u25bc',mx,ny+nh+fs*.9+Math.sin(t*3)*3);
+    ctx.fillStyle='#8a8fb5';
+    ctx.fillText('(click the envelope)',mx,ey+eh+fs*2);
+  }
+  ctx.textAlign='left';ctx.textBaseline='top';ctx.globalAlpha=1;
+}
+
+function frame(ms){
+  const t=ms/1000,ang=reduce?0:t*.7,ca=Math.cos(ang),sa=Math.sin(ang);
+  ctx.globalAlpha=1;ctx.fillStyle='#05060f';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#fff';
+  for(const s of stars){ctx.globalAlpha=.25+.75*Math.abs(Math.sin(t*1.3+s.ph));ctx.fillText(s.c,Math.floor(s.x*cols)*cw,Math.floor(s.y*rows)*chh)}
+
+  // animation progress
+  let o=0,rv=0,envFade=1,slide=0;
+  if(openStart!==null){
+    const el=(ms-openStart)/1000;
+    o=smooth(clamp(el/OPEN_DUR));
+    rv=clamp((el-WAIT)/POP_DUR);
+    const away=smooth(clamp((el-WAIT)/1.8));
+    envFade=1-away;slide=away*H*.25;
+  }
+  if(envFade>0)drawEnvelope(t,o,envFade,slide);
+
+  if(rv>0){
+    const grow=easeOut(rv);                        // slow pop-up
+    const S=Math.min(W/2.6,H/3.6)*grow,cx=W/2,cy=H*.46;
+    dep.fill(-9);cell.fill(-1);
+    for(let i=0;i<P.length;i++){
+      const p=P[i],x=p.x*ca+p.z*sa,z=-p.x*sa+p.z*ca,k=4.5/(4.5-z);
+      const c=Math.floor((cx+x*S*k)/cw),r=Math.floor((cy-p.y*S*k)/chh);
+      if(c<0||r<0||c>=cols||r>=rows)continue;
+      const j=r*cols+c;if(z>dep[j]){dep[j]=z;cell[j]=i}
+    }
+    const fadeIn=clamp(rv*2.5);
+    for(let j=0;j<cell.length;j++){
+      if(cell[j]<0)continue;const p=P[cell[j]];
+      ctx.globalAlpha=fadeIn*Math.min(1,Math.max(.3,.35+.65*(dep[j]+1.3)/2.6));
+      ctx.fillStyle=p.col;ctx.fillText(p.c,(j%cols)*cw,Math.floor(j/cols)*chh);
+    }
+    // cat + tag appear once the bouquet is almost fully grown
+    const late=clamp((rv-.8)/.2);
+    if(late>0){
+      ctx.globalAlpha=late;
+      const row0=Math.floor((cy+1.3*S)/chh)+1;
+      CAT.forEach((l,i)=>{ctx.fillStyle='#ffe0f0';ctx.fillText(l,Math.floor(cols/2-l.length/2)*cw,(row0+i)*chh)});
+      const tag='for you \u2764';ctx.fillStyle=Math.sin(t*4)>0?'#ff6ec7':'#ff9ad5';
+      ctx.fillText(tag,Math.floor(cols/2-tag.length/2)*cw,(row0+3)*chh);
+    }
+    ctx.globalAlpha=1;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body></html>
+"""
+
+with open("index.html", "w", encoding="utf-8") as f:
+    f.write(HTML)
+
+PORT = 8000
+socketserver.TCPServer.allow_reuse_address = True
+with socketserver.TCPServer(("", PORT), http.server.SimpleHTTPRequestHandler) as server:
+    print(f"Open http://localhost:{PORT}  (Ctrl+C to stop)")
+    webbrowser.open(f"http://localhost:{PORT}")
+    server.serve_forever()
